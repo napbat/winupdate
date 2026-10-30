@@ -366,31 +366,87 @@ impl<R: ReadAt> Store<R> {
         let last = (end - 1) / layout.chunk_size;
         let bounds = self.chunk_bounds(layout, first, last)?;
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut batch_start = 0;
-        while batch_start < bounds.len() - 1 {
-            // Read the compressed data of as many chunks as fit in one batch.
-            let mut batch_end = batch_start + 1;
-            while batch_end < bounds.len() - 1
-                && bounds[batch_end + 1] - bounds[batch_start] <= MAX_BATCH
-            {
-                batch_end += 1;
+        let count = bounds.len() - 1;
+        let mut start = 0;
+        while start < count {
+            if cache.copy_cached(layout, first + start as u64, offset, buf)? {
+                start += 1;
+                continue;
             }
-            let mut data = vec![0; to_usize(bounds[batch_end] - bounds[batch_start])?];
+            // Read the compressed data of as many chunks as fit in one batch. Stop before a
+            // chunk that the cache has.
+            let mut end = start + 1;
+            while end < count
+                && bounds[end + 1] - bounds[start] <= MAX_BATCH
+                && !cache.holds(layout, first + end as u64)
+            {
+                end += 1;
+            }
+            let mut data = vec![0; to_usize(bounds[end] - bounds[start])?];
             self.reader
-                .read_exact_at(layout.data_start + bounds[batch_start], &mut data)?;
-            for index in batch_start..batch_end {
+                .read_exact_at(layout.data_start + bounds[start], &mut data)?;
+            for index in start..end {
                 let chunk = first + index as u64;
-                let compressed = &data[to_usize(bounds[index] - bounds[batch_start])?
-                    ..to_usize(bounds[index + 1] - bounds[batch_start])?];
+                let compressed = &data[to_usize(bounds[index] - bounds[start])?
+                    ..to_usize(bounds[index + 1] - bounds[start])?];
                 cache.copy_chunk(layout, chunk, compressed, offset, buf)?;
             }
-            batch_start = batch_end;
+            start = end;
         }
         Ok(())
     }
 }
 
+/// The part of a chunk in a range of `len` bytes at `offset`.
+struct Part {
+    /// The uncompressed size of the chunk.
+    chunk_len: usize,
+    /// The range in the chunk.
+    from: usize,
+    to: usize,
+    /// The position of the part in the range.
+    at: usize,
+}
+
+impl Part {
+    fn new(layout: &Layout<'_>, chunk: u64, offset: u64, len: usize) -> Result<Self> {
+        let chunk_start = chunk * layout.chunk_size;
+        let chunk_len = to_usize(layout.chunk_size.min(layout.size - chunk_start))?;
+        let from = to_usize(offset.saturating_sub(chunk_start))?;
+        let to = to_usize((offset + len as u64 - chunk_start).min(chunk_len as u64))?;
+        let at = to_usize(chunk_start + from as u64 - offset)?;
+        Ok(Self {
+            chunk_len,
+            from,
+            to,
+            at,
+        })
+    }
+}
+
 impl Cache {
+    /// Return `true` if the cache has the chunk.
+    fn holds(&self, layout: &Layout<'_>, chunk: u64) -> bool {
+        self.key == Some((layout.data_start, chunk))
+    }
+
+    /// Copy the part of the chunk from the cache into `buf`, if the cache has the chunk.
+    fn copy_cached(
+        &self,
+        layout: &Layout<'_>,
+        chunk: u64,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<bool> {
+        if !self.holds(layout, chunk) {
+            return Ok(false);
+        }
+        let part = Part::new(layout, chunk, offset, buf.len())?;
+        buf[part.at..part.at + (part.to - part.from)]
+            .copy_from_slice(&self.data[part.from..part.to]);
+        Ok(true)
+    }
+
     /// Decompress one chunk and copy its part of the range at `offset` into `buf`.
     fn copy_chunk(
         &mut self,
@@ -400,24 +456,16 @@ impl Cache {
         offset: u64,
         buf: &mut [u8],
     ) -> Result<()> {
-        let chunk_start = chunk * layout.chunk_size;
-        let chunk_len = to_usize(layout.chunk_size.min(layout.size - chunk_start))?;
-        // The part of the chunk in the range, and its position in `buf`.
-        let from = to_usize(offset.saturating_sub(chunk_start))?;
-        let to = to_usize((offset + buf.len() as u64 - chunk_start).min(chunk_len as u64))?;
-        let at = to_usize(chunk_start + from as u64 - offset)?;
-        let target = &mut buf[at..at + (to - from)];
-        if from == 0 && to == chunk_len {
+        let part = Part::new(layout, chunk, offset, buf.len())?;
+        let target = &mut buf[part.at..part.at + (part.to - part.from)];
+        if part.from == 0 && part.to == part.chunk_len {
             return decompress(&mut self.decoder, compressed, target);
         }
-        let key = (layout.data_start, chunk);
-        if self.key != Some(key) {
-            self.key = None;
-            self.data.resize(chunk_len, 0);
-            decompress(&mut self.decoder, compressed, &mut self.data)?;
-            self.key = Some(key);
-        }
-        target.copy_from_slice(&self.data[from..to]);
+        self.key = None;
+        self.data.resize(part.chunk_len, 0);
+        decompress(&mut self.decoder, compressed, &mut self.data)?;
+        self.key = Some((layout.data_start, chunk));
+        target.copy_from_slice(&self.data[part.from..part.to]);
         Ok(())
     }
 }

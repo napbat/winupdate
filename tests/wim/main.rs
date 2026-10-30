@@ -102,6 +102,32 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
+/// Build an LZMS WIM file with two solid resources, as in ESD files: the stream offsets go
+/// through both resources, a stream crosses from the first resource to the second, and the
+/// first stream entry comes before the entry of its resource.
+fn two_solid_resources_wim() -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+    let parts = solid_files();
+    let mut wim = Builder::new(0xE00, FLAG_COMPRESSION | FLAG_LZMS, 131_072);
+    wim.solid_stream(0, &parts[0]);
+    wim.solid(262_144, 262_144, &[fixture("solid-0")]);
+    wim.solid_stream(200_000, &parts[1]);
+    wim.solid(137_856, 262_144, &[fixture("solid-1")]);
+    wim.solid_stream(350_000, &parts[2]);
+    let names = ["a.txt", "b.exe", "c.txt"];
+    let nodes: Vec<Node> = names
+        .iter()
+        .zip(&parts)
+        .map(|(name, part)| Node::file(name, part))
+        .collect();
+    wim.image(&nodes, true);
+    let files = names
+        .iter()
+        .zip(parts)
+        .map(|(name, part)| ((*name).to_owned(), part))
+        .collect();
+    (wim.finish(), files)
+}
+
 /// Open a WIM file, and check each file and some ranges.
 fn check(bytes: &[u8], files: &[(String, Vec<u8>)]) {
     let wim = Wim::open(bytes).unwrap();
@@ -189,6 +215,19 @@ fn a_solid_wim_gives_its_files() {
 }
 
 #[test]
+fn stream_offsets_go_through_all_solid_resources() {
+    let (bytes, files) = two_solid_resources_wim();
+    check(&bytes, &files);
+    // A range of the second file that crosses from the first resource to the second.
+    let wim = Wim::open(&bytes[..]).unwrap();
+    let image = wim.image(1).unwrap();
+    let stream = wim.open_file(image.find("b.exe").unwrap()).unwrap();
+    let mut buf = vec![0; 2000];
+    stream.read_exact_at(61_144, &mut buf).unwrap();
+    assert_eq!(buf, files[1].1[61_144..63_144]);
+}
+
+#[test]
 fn storage_order_follows_the_data() {
     let (bytes, _) = solid_wim();
     let wim = Wim::open(&bytes[..]).unwrap();
@@ -221,7 +260,12 @@ fn a_changed_byte_fails_the_hash_check() {
 
 #[test]
 fn every_truncated_wim_is_an_error() {
-    for (bytes, files) in [plain_wim(), chunked_wim(), solid_wim()] {
+    for (bytes, files) in [
+        plain_wim(),
+        chunked_wim(),
+        solid_wim(),
+        two_solid_resources_wim(),
+    ] {
         let step = bytes.len() / 300;
         for len in (0..bytes.len()).step_by(step.max(1)) {
             let Ok(wim) = Wim::open(&bytes[..len]) else {
