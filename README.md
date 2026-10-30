@@ -50,14 +50,17 @@ let manifest = cab.read("update.mum")?;
 ```
 
 Implement `ReadAt` for an HTTP client to read a package without a full download. `Slice`
-gives a part of a source, and `Cursor` gives a `Read + Seek` stream for a source.
+gives a part of a source, and `Cursor` gives a `Read + Seek` stream for a source. `Cursor`
+reads ahead 64 KiB, so that the many small reads of the `cab` crate become few range
+requests.
 
 ## Cost of reads
 
 - `Wim::open` reads the header, the lookup table and the headers of the solid resources.
 - `Wim::image` reads and decompresses the metadata resource of the image.
 - A read of a file decompresses only the chunks of the range. The chunks of a solid resource
-  in an ESD file are 64 MiB each.
+  in an ESD file are 64 MiB each. The reader keeps the last chunk, so read many files in the
+  order of `Wim::storage_order` to decompress each chunk only once.
 - A cabinet folder is one compressed stream. A read of a file late in a large folder
   decompresses all files before it in the folder.
 
