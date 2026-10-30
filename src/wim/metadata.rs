@@ -44,10 +44,15 @@ pub struct WimFile {
     pub path: String,
     /// The Windows file attributes.
     pub attributes: u32,
-    /// The size of the unnamed data stream, in bytes.
+    /// The size of the unnamed data stream, in bytes. It is 0 if `stored` is `false`.
     pub size: u64,
     /// The SHA-1 hash of the unnamed data stream, or `None` for a file with no data.
     pub sha1: Option<[u8; 20]>,
+    /// `true` if this WIM file has the data. An ESD file of a UUP set can refer to data in
+    /// other files of the set: then `stored` is `false`, and
+    /// [`Wim::read_stream`](crate::Wim::read_stream) on the file of the set that has the
+    /// SHA-1 hash reads the data.
+    pub stored: bool,
 }
 
 impl WimFile {

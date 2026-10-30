@@ -132,26 +132,14 @@ impl<R: ReadAt> Wim<R> {
         let entries = metadata::parse(&data)?;
         let mut files = Vec::with_capacity(entries.len());
         for entry in entries {
-            let size = match &entry.sha1 {
-                None => 0,
-                Some(hash) => {
-                    self.lookup
-                        .streams
-                        .get(hash)
-                        .ok_or_else(|| {
-                            Error::invalid_data(
-                                "a file has a stream that is not in the lookup table",
-                            )
-                            .with_details(entry.path.clone())
-                        })?
-                        .size
-                }
-            };
+            // An ESD file of a UUP set can refer to streams in other files of the set.
+            let stream = entry.sha1.and_then(|hash| self.lookup.streams.get(&hash));
             files.push(WimFile {
                 path: entry.path,
                 attributes: entry.attributes,
-                size,
+                size: stream.map_or(0, |stream| stream.size),
                 sha1: entry.sha1,
+                stored: entry.sha1.is_none() || stream.is_some(),
             });
         }
         Ok(Image { files })
@@ -159,33 +147,59 @@ impl<R: ReadAt> Wim<R> {
 
     /// Return the stream of a file.
     fn stream(&self, file: &WimFile) -> Result<Option<Stream>> {
-        match &file.sha1 {
-            None => Ok(None),
-            Some(hash) => self
-                .lookup
-                .streams
-                .get(hash)
-                .copied()
-                .map(Some)
-                .ok_or_else(|| Error::not_found(file.path.clone())),
-        }
+        file.sha1.map(|hash| self.find_stream(&hash)).transpose()
+    }
+
+    /// Return the stream with a SHA-1 hash.
+    fn find_stream(&self, sha1: &[u8; 20]) -> Result<Stream> {
+        self.lookup
+            .streams
+            .get(sha1)
+            .copied()
+            .ok_or_else(|| Error::not_found(format!("stream {}", hex(sha1))))
+    }
+
+    /// Return the size of the stream with a SHA-1 hash, or `None` if this WIM file does not
+    /// have the stream.
+    ///
+    /// Use it to find the file of a set (for example the ESD files of a UUP set) that has
+    /// the data of a [`WimFile`] with [`WimFile::stored`] set to `false`.
+    #[must_use]
+    pub fn stream_size(&self, sha1: &[u8; 20]) -> Option<u64> {
+        self.lookup.streams.get(sha1).map(|stream| stream.size)
     }
 
     /// Read the data of a file, and check its SHA-1 hash.
     ///
     /// # Errors
     ///
-    /// Return an error if the reader fails, if the data is not valid, or if the hash of the
-    /// data is not equal to the hash in the lookup table.
+    /// Return a `NotFound` error if this WIM file does not have the data of the file (see
+    /// [`WimFile::stored`]). Return other errors if the reader fails, if the data is not
+    /// valid, or if the hash of the data is not equal to the hash in the lookup table.
     pub fn read(&self, file: &WimFile) -> Result<Vec<u8>> {
-        let Some(stream) = self.stream(file)? else {
-            return Ok(Vec::new());
-        };
+        match &file.sha1 {
+            None => Ok(Vec::new()),
+            Some(hash) => self
+                .read_stream(hash)
+                .map_err(|e| e.with_details(file.path.clone())),
+        }
+    }
+
+    /// Read the stream with a SHA-1 hash, and check the hash.
+    ///
+    /// Use it to read the data of a file from an other WIM file of the same set.
+    ///
+    /// # Errors
+    ///
+    /// Return a `NotFound` error if this WIM file does not have the stream. Return other
+    /// errors if the reader fails, if the data is not valid, or if the hash of the data is not
+    /// equal to `sha1`.
+    pub fn read_stream(&self, sha1: &[u8; 20]) -> Result<Vec<u8>> {
+        let stream = self.find_stream(sha1)?;
         let mut data = vec![0; to_usize(stream.size)?];
         self.store.read_location(&stream.location, 0, &mut data)?;
-        if Some(<[u8; 20]>::from(Sha1::digest(&data))) != file.sha1 {
-            return Err(Error::new(ErrorKind::HashMismatch { algorithm: "SHA-1" })
-                .with_details(file.path.clone()));
+        if <[u8; 20]>::from(Sha1::digest(&data)) != *sha1 {
+            return Err(Error::new(ErrorKind::HashMismatch { algorithm: "SHA-1" }));
         }
         Ok(data)
     }
@@ -195,7 +209,7 @@ impl<R: ReadAt> Wim<R> {
     ///
     /// # Errors
     ///
-    /// Return an error if the stream of the file is not in the lookup table.
+    /// Return a `NotFound` error if this WIM file does not have the data of the file.
     pub fn open_file(&self, file: &WimFile) -> Result<WimStream<'_, R>> {
         Ok(WimStream {
             store: &self.store,
@@ -227,6 +241,15 @@ impl<R: ReadAt> Wim<R> {
         });
         files
     }
+}
+
+/// Format a hash as lowercase hexadecimal.
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::new(), |mut text, byte| {
+        let _ = write!(text, "{byte:02x}");
+        text
+    })
 }
 
 /// Read a whole resource that is not solid, with a size limit.

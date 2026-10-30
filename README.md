@@ -20,6 +20,11 @@ multi-gigabyte package over HTTP with range requests.
 
 winupdate checks the SHA-1 hash of each file that `Wim::read` reads.
 
+An edition ESD of a UUP set (for example `professional_en-us.esd`) refers to streams that
+only other ESD files of the set have. For such a file, `WimFile::stored` is `false`. Open the
+other files of the set, find the one where `Wim::stream_size` knows the SHA-1 hash, and read
+the data with `Wim::read_stream`.
+
 ## Usage
 
 ```rust,no_run

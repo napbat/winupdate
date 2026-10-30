@@ -136,6 +136,7 @@ fn check(bytes: &[u8], files: &[(String, Vec<u8>)]) {
     let image = wim.image(1).unwrap();
     for (path, data) in files {
         let file = image.find(path).unwrap_or_else(|| panic!("no {path}"));
+        assert!(file.stored, "{path}");
         assert_eq!(file.size, data.len() as u64, "{path}");
         assert!(wim.read(file).unwrap() == *data, "{path}");
         let stream = wim.open_file(file).unwrap();
@@ -301,6 +302,48 @@ fn a_changed_chunk_is_an_error() {
         let wim = Wim::open(&changed[..]).unwrap();
         assert!(wim.read(&file).is_err(), "byte {at}");
     }
+}
+
+#[test]
+fn a_stream_in_an_other_file_of_the_set_reads_from_that_file() {
+    // Regression: `professional_en-us.esd` of a UUP set refers to streams that only other
+    // ESD files of the set have. Listing the image failed with `InvalidData`.
+    let here = text(7, 3000);
+    let elsewhere = text(8, 4000);
+    let mut wim = Builder::new(0xE00, FLAG_COMPRESSION | FLAG_LZMS, 131_072);
+    let header = wim.plain(&here, 0);
+    wim.entry(header, sha1(&here));
+    wim.image(
+        &[
+            Node::file("here.txt", &here),
+            Node::file("InkDiv.dll", &elsewhere),
+        ],
+        false,
+    );
+    let edition = wim.finish();
+    let mut reference = Builder::new(0xE00, FLAG_COMPRESSION | FLAG_LZMS, 131_072);
+    let header = reference.plain(&elsewhere, 0);
+    reference.entry(header, sha1(&elsewhere));
+    reference.image(&[Node::file("other.dll", &elsewhere)], false);
+    let reference = reference.finish();
+
+    let wim = Wim::open(&edition[..]).unwrap();
+    let image = wim.image(1).unwrap();
+    let local = image.find("here.txt").unwrap();
+    assert!(local.stored);
+    assert_eq!(wim.read(local).unwrap(), here);
+    let missing = image.find("InkDiv.dll").unwrap();
+    assert!(!missing.stored);
+    assert_eq!(missing.size, 0);
+    let error = wim.read(missing).unwrap_err();
+    assert!(matches!(error.kind, ErrorKind::NotFound(_)), "{error}");
+    assert!(wim.open_file(missing).is_err());
+    let hash = missing.sha1.unwrap();
+    assert_eq!(wim.stream_size(&hash), None);
+
+    let other = Wim::open(&reference[..]).unwrap();
+    assert_eq!(other.stream_size(&hash), Some(4000));
+    assert_eq!(other.read_stream(&hash).unwrap(), elsewhere);
 }
 
 #[test]
