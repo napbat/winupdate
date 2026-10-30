@@ -5,11 +5,12 @@
 //!
 //! - A solid resource, with the uncompressed size `0x1_0000_0000`. Its true uncompressed size
 //!   is in the header at the start of the resource.
-//! - A stream in the solid resources before it. Its size in the file is the uncompressed size
-//!   of the stream, and its offset is the offset in the uncompressed data.
+//! - A stream in a solid resource. Its size in the file is the uncompressed size of the
+//!   stream, and its offset is an offset in the uncompressed data of all solid resources, one
+//!   after the other in the order of the lookup table.
 //!
-//! The solid resources in a row make a group. The offsets of the streams after a group are
-//! offsets in the uncompressed data of all resources of the group, one after the other.
+//! A stream entry can come before the entry of its solid resource. Real ESD files with three
+//! solid resources have one sequence of stream offsets through all three resources.
 
 use super::header::{RESOURCE_METADATA, RESOURCE_SOLID, RESOURCE_SPANNED, ResourceHeader, u16_at};
 use crate::error::{Error, Result};
@@ -26,11 +27,9 @@ const SOLID_RESOURCE_MAGIC: u64 = 0x1_0000_0000;
 pub(crate) enum Location {
     /// A whole resource that is not solid.
     Resource(ResourceHeader),
-    /// A range in the uncompressed data of a group of solid resources.
+    /// A range in the uncompressed data of all solid resources.
     Solid {
-        /// The index of the group.
-        group: usize,
-        /// The offset in the uncompressed data of the group.
+        /// The offset in the uncompressed data of all solid resources.
         offset: u64,
     },
 }
@@ -51,8 +50,8 @@ pub(crate) struct LookupTable {
     pub(crate) streams: HashMap<[u8; 20], Stream>,
     /// The metadata resources, one for each image in order.
     pub(crate) metadata: Vec<ResourceHeader>,
-    /// The groups of solid resources.
-    pub(crate) solid_groups: Vec<Vec<ResourceHeader>>,
+    /// The solid resources, in the order of the lookup table.
+    pub(crate) solid_resources: Vec<ResourceHeader>,
 }
 
 impl LookupTable {
@@ -65,7 +64,6 @@ impl LookupTable {
             )));
         }
         let mut table = Self::default();
-        let mut after_resource = false;
         let (entries, _) = bytes.as_chunks::<ENTRY_SIZE>();
         for (index, entry) in entries.iter().enumerate() {
             let context = |e: Error| {
@@ -86,16 +84,9 @@ impl LookupTable {
             }
             let solid = header.has(RESOURCE_SOLID);
             if solid && header.original_size == SOLID_RESOURCE_MAGIC {
-                if !after_resource {
-                    table.solid_groups.push(Vec::new());
-                }
-                if let Some(group) = table.solid_groups.last_mut() {
-                    group.push(header);
-                }
-                after_resource = true;
+                table.solid_resources.push(header);
                 continue;
             }
-            after_resource = false;
             if header.has(RESOURCE_METADATA) {
                 if solid {
                     return Err(context(Error::unsupported("a solid metadata resource")));
@@ -104,15 +95,9 @@ impl LookupTable {
                 continue;
             }
             let stream = if solid {
-                let Some(group) = table.solid_groups.len().checked_sub(1) else {
-                    return Err(context(Error::invalid_data(
-                        "a solid stream before the first solid resource",
-                    )));
-                };
                 Stream {
                     size: header.size_in_wim,
                     location: Location::Solid {
-                        group,
                         offset: header.offset,
                     },
                 }
@@ -123,6 +108,14 @@ impl LookupTable {
                 }
             };
             table.streams.entry(hash).or_insert(stream);
+        }
+        let solid_stream = table
+            .streams
+            .values()
+            .any(|stream| matches!(stream.location, Location::Solid { .. }));
+        if solid_stream && table.solid_resources.is_empty() {
+            return Err(Error::invalid_data("a solid stream, but no solid resource")
+                .in_structure("lookup table"));
         }
         Ok(table)
     }

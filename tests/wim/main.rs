@@ -189,6 +189,23 @@ fn a_solid_wim_gives_its_files() {
 }
 
 #[test]
+fn storage_order_follows_the_data() {
+    let (bytes, _) = solid_wim();
+    let wim = Wim::open(&bytes[..]).unwrap();
+    let image = wim.image(1).unwrap();
+    let reversed: Vec<_> = image.files().iter().rev().collect();
+    let paths: Vec<&str> = wim
+        .storage_order(reversed)
+        .iter()
+        .map(|f| f.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        ["files", "files\\a.txt", "files\\b.exe", "files\\c.txt"]
+    );
+}
+
+#[test]
 fn a_changed_byte_fails_the_hash_check() {
     let (mut bytes, files) = plain_wim();
     let at = bytes

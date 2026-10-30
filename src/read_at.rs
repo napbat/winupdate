@@ -147,17 +147,38 @@ impl<R: ReadAt> ReadAt for Slice<R> {
 /// A [`Read`] and [`Seek`] adapter for a [`ReadAt`] source.
 ///
 /// Use it to give a [`ReadAt`] source to an API that needs a stream, for example the `cab`
-/// crate.
+/// crate. Such an API often reads a few bytes at a time. Thus the cursor reads ahead into a
+/// buffer, and serves small reads from the buffer. A read that is larger than the buffer goes
+/// directly to the source.
 #[derive(Debug, Clone)]
 pub struct Cursor<R> {
     inner: R,
     position: u64,
+    /// The bytes that the cursor read ahead, from `buffer_start`.
+    buffer: Vec<u8>,
+    buffer_start: u64,
+    buffer_size: usize,
 }
 
 impl<R: ReadAt> Cursor<R> {
-    /// Make a stream at position 0.
+    /// The default read-ahead size (64 KiB).
+    pub const DEFAULT_BUFFER_SIZE: usize = 64 * 1024;
+
+    /// Make a stream at position 0, with the default read-ahead size.
     pub fn new(inner: R) -> Self {
-        Self { inner, position: 0 }
+        Self::with_buffer_size(inner, Self::DEFAULT_BUFFER_SIZE)
+    }
+
+    /// Make a stream at position 0 that reads ahead `buffer_size` bytes. Zero reads no more
+    /// than each call asks for.
+    pub fn with_buffer_size(inner: R, buffer_size: usize) -> Self {
+        Self {
+            inner,
+            position: 0,
+            buffer: Vec::new(),
+            buffer_start: 0,
+            buffer_size,
+        }
     }
 
     /// Return the source.
@@ -174,7 +195,30 @@ impl<R: ReadAt> Read for Cursor<R> {
         if count == 0 {
             return Ok(0);
         }
-        self.inner.read_exact_at(self.position, &mut buf[..count])?;
+        let in_buffer = self
+            .position
+            .checked_sub(self.buffer_start)
+            .and_then(|skip| usize::try_from(skip).ok())
+            .filter(|&skip| skip < self.buffer.len());
+        let count = if let Some(skip) = in_buffer {
+            let count = count.min(self.buffer.len() - skip);
+            buf[..count].copy_from_slice(&self.buffer[skip..skip + count]);
+            count
+        } else if count >= self.buffer_size {
+            self.inner.read_exact_at(self.position, &mut buf[..count])?;
+            count
+        } else {
+            let ahead =
+                usize::try_from(left).map_or(self.buffer_size, |left| left.min(self.buffer_size));
+            self.buffer.resize(ahead, 0);
+            self.buffer_start = self.position;
+            if let Err(error) = self.inner.read_exact_at(self.position, &mut self.buffer) {
+                self.buffer.clear();
+                return Err(error);
+            }
+            buf[..count].copy_from_slice(&self.buffer[..count]);
+            count
+        };
         self.position += count as u64;
         Ok(count)
     }
@@ -205,6 +249,39 @@ mod tests {
         slice.read_exact_at(15, &mut buf).unwrap();
         assert_eq!(buf, [25, 26, 27, 28, 29]);
         assert!(slice.read_exact_at(16, &mut buf).is_err());
+    }
+
+    /// A source that counts its reads.
+    struct Counting(Vec<u8>, std::cell::Cell<usize>);
+
+    impl ReadAt for Counting {
+        fn size(&self) -> io::Result<u64> {
+            self.0.size()
+        }
+
+        fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+            self.1.set(self.1.get() + 1);
+            self.0.read_exact_at(offset, buf)
+        }
+    }
+
+    #[test]
+    fn a_cursor_serves_small_reads_from_its_buffer() {
+        let source = Counting((0..=255).collect(), std::cell::Cell::new(0));
+        let mut cursor = Cursor::with_buffer_size(&source, 100);
+        let mut byte = [0; 1];
+        for expected in 0..=255u8 {
+            cursor.read_exact(&mut byte).unwrap();
+            assert_eq!(byte[0], expected);
+        }
+        assert_eq!(source.1.get(), 3);
+        cursor.seek(SeekFrom::Start(50)).unwrap();
+        cursor.read_exact(&mut byte).unwrap();
+        assert_eq!(byte[0], 50);
+        let mut large = [0; 120];
+        cursor.seek(SeekFrom::Start(10)).unwrap();
+        cursor.read_exact(&mut large).unwrap();
+        assert_eq!(large[119], 129);
     }
 
     #[test]

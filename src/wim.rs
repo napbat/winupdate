@@ -38,7 +38,7 @@ pub use metadata::WimFile;
 use crate::error::{Error, ErrorKind, Result};
 use crate::read_at::ReadAt;
 use header::{HEADER_SIZE, Header, RESOURCE_SOLID, ResourceHeader};
-use lookup::{LookupTable, Stream};
+use lookup::{Location, LookupTable, Stream};
 use resource::{Store, to_usize};
 use sha1::{Digest, Sha1};
 use std::io;
@@ -68,7 +68,7 @@ impl<R: ReadAt> Wim<R> {
         let mut store = Store::new(reader, &header);
         let table = read_table(&store, &header.lookup_table, "lookup table")?;
         let lookup = LookupTable::parse(&table)?;
-        store.load_solid_groups(&lookup.solid_groups)?;
+        store.load_solid_resources(&lookup.solid_resources)?;
         if lookup.metadata.len() < header.image_count as usize {
             return Err(Error::invalid_data(format!(
                 "the header has {} images, but the lookup table has {} metadata resources",
@@ -201,6 +201,31 @@ impl<R: ReadAt> Wim<R> {
             store: &self.store,
             stream: self.stream(file)?,
         })
+    }
+
+    /// Sort files in the order of their data in the WIM file.
+    ///
+    /// A read of a small file in a solid resource decompresses a full chunk (64 MiB in an ESD
+    /// file), and the reader keeps only the last chunk. Read many files in this order, so
+    /// that each chunk is decompressed only once. Files without data come first.
+    #[must_use]
+    pub fn storage_order<'a>(
+        &self,
+        files: impl IntoIterator<Item = &'a WimFile>,
+    ) -> Vec<&'a WimFile> {
+        let mut files: Vec<&WimFile> = files.into_iter().collect();
+        files.sort_by_cached_key(|file| {
+            let stream = file
+                .sha1
+                .as_ref()
+                .and_then(|hash| self.lookup.streams.get(hash));
+            match stream.map(|stream| stream.location) {
+                None => (0, 0),
+                Some(Location::Resource(resource)) => (1, resource.offset),
+                Some(Location::Solid { offset }) => (2, offset),
+            }
+        });
+        files
     }
 }
 

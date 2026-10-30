@@ -19,24 +19,13 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: winupdate
     steps:
-      # The crate depends on `../lzms`, so check out both repositories side by side.
       - uses: actions/checkout@v5
-        with:
-          path: winupdate
-      - uses: actions/checkout@v5
-        with:
-          repository: napbat/lzms
-          path: lzms
 
       - name: Install mise
         uses: jdx/mise-action@v4
         with:
           experimental: true
-          working_directory: winupdate
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
@@ -56,17 +45,8 @@ jobs:
   msrv:
     name: MSRV (Rust 1.88)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: winupdate
     steps:
       - uses: actions/checkout@v5
-        with:
-          path: winupdate
-      - uses: actions/checkout@v5
-        with:
-          repository: napbat/lzms
-          path: lzms
       - name: Install MSRV
         run: rustup toolchain install 1.88.0 --profile minimal
       - name: Test

@@ -94,6 +94,4 @@ cargo doc --no-deps
 cargo +1.88.0 test
 ```
 
-The crate depends on `lzms` at `../lzms`. Check out `napbat/lzms` next to this repository.
-
 `mise run precommit` runs the format and Clippy checks.

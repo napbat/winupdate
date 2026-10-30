@@ -36,11 +36,12 @@ struct SolidResource {
     chunk_offsets: Vec<u64>,
 }
 
-/// A group of solid resources. Stream offsets go through all resources of the group.
-#[derive(Debug)]
-struct SolidGroup {
+/// All solid resources of a file. Stream offsets go through all of them, one after the other.
+#[derive(Debug, Default)]
+struct SolidResources {
     resources: Vec<SolidResource>,
-    /// The start of each resource in the uncompressed data of the group.
+    /// The start of each resource in the uncompressed data of all solid resources, and the
+    /// end of the last one.
     starts: Vec<u64>,
 }
 
@@ -85,7 +86,7 @@ pub(crate) struct Store<R> {
     reader: R,
     compression: Compression,
     chunk_size: u32,
-    groups: Vec<SolidGroup>,
+    solid: SolidResources,
     cache: Mutex<Cache>,
 }
 
@@ -96,7 +97,7 @@ impl<R: ReadAt> Store<R> {
             reader,
             compression: header.compression,
             chunk_size: header.chunk_size,
-            groups: Vec::new(),
+            solid: SolidResources::default(),
             cache: Mutex::new(Cache {
                 decoder: lzms::Decoder::new(),
                 key: None,
@@ -106,21 +107,19 @@ impl<R: ReadAt> Store<R> {
     }
 
     /// Read the headers and the chunk sizes of the solid resources.
-    pub(crate) fn load_solid_groups(&mut self, groups: &[Vec<ResourceHeader>]) -> Result<()> {
-        for group in groups {
-            let mut resources = Vec::with_capacity(group.len());
-            let mut starts = vec![0];
-            let mut total = 0u64;
-            for resource in group {
-                let solid = self.solid_resource(resource)?;
-                total = total
-                    .checked_add(solid.size)
-                    .ok_or_else(|| Error::invalid_data("the solid resources are too large"))?;
-                starts.push(total);
-                resources.push(solid);
-            }
-            self.groups.push(SolidGroup { resources, starts });
+    pub(crate) fn load_solid_resources(&mut self, headers: &[ResourceHeader]) -> Result<()> {
+        let mut resources = Vec::with_capacity(headers.len());
+        let mut starts = vec![0];
+        let mut total = 0u64;
+        for header in headers {
+            let solid = self.solid_resource(header)?;
+            total = total
+                .checked_add(solid.size)
+                .ok_or_else(|| Error::invalid_data("the solid resources are too large"))?;
+            starts.push(total);
+            resources.push(solid);
         }
+        self.solid = SolidResources { resources, starts };
         Ok(())
     }
 
@@ -189,14 +188,11 @@ impl<R: ReadAt> Store<R> {
     ) -> Result<()> {
         match location {
             Location::Resource(resource) => self.read_resource(resource, offset, buf),
-            Location::Solid {
-                group,
-                offset: base,
-            } => {
+            Location::Solid { offset: base } => {
                 let at = base
                     .checked_add(offset)
                     .ok_or_else(|| Error::invalid_data("the stream offset is too large"))?;
-                self.read_solid(*group, at, buf)
+                self.read_solid(at, buf)
             }
         }
     }
@@ -257,19 +253,16 @@ impl<R: ReadAt> Store<R> {
         self.read_chunks(&layout, offset, buf)
     }
 
-    /// Read `buf.len()` uncompressed bytes at `offset` of a group of solid resources.
-    fn read_solid(&self, group: usize, mut offset: u64, mut buf: &mut [u8]) -> Result<()> {
-        let group = self
-            .groups
-            .get(group)
-            .ok_or_else(|| Error::invalid_data("no solid resource group"))?;
+    /// Read `buf.len()` uncompressed bytes at `offset` of the solid resources.
+    fn read_solid(&self, mut offset: u64, mut buf: &mut [u8]) -> Result<()> {
+        let solid = &self.solid;
         while !buf.is_empty() {
             // The resource that has `offset`: the last one that starts at or before it.
-            let index = group.starts.partition_point(|&start| start <= offset);
-            let Some(resource) = index.checked_sub(1).and_then(|i| group.resources.get(i)) else {
+            let index = solid.starts.partition_point(|&start| start <= offset);
+            let Some(resource) = index.checked_sub(1).and_then(|i| solid.resources.get(i)) else {
                 return Err(Error::unexpected_end().in_structure("solid resource"));
             };
-            let inner = offset - group.starts[index - 1];
+            let inner = offset - solid.starts[index - 1];
             let count = buf
                 .len()
                 .min(to_usize(resource.size - inner).unwrap_or(usize::MAX));
