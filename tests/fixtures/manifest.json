@@ -1,0 +1,27 @@
+{
+  "chunked-0": {
+    "size": 131072,
+    "sha256": "980672d53826370a7b80d729cad06adb00258aed4c7aea7c0ce7dfcbba9ae69a",
+    "compressed_bytes": 19370
+  },
+  "chunked-1": {
+    "size": 131072,
+    "sha256": "0b7270c9beaecfb13e54b035640d2d867a37f78aeb911edbf32d8d12ed451dc0",
+    "compressed_bytes": 19270
+  },
+  "chunked-2": {
+    "size": 37856,
+    "sha256": "b2c7596c7a4d71954ee8414c07813f8e8d7c11031634bed6ffe5504bc468a074",
+    "compressed_bytes": 6204
+  },
+  "solid-0": {
+    "size": 262144,
+    "sha256": "2c48e1683675671e30a577e2d7c160ecf4f08d97b681bf05b9f24e1af5722cb9",
+    "compressed_bytes": 42400
+  },
+  "solid-1": {
+    "size": 137856,
+    "sha256": "2e5c39d85638534aadcc0d1cc3a9f33cfb42d22ecb412ff2b12e7a4e78ed1134",
+    "compressed_bytes": 26654
+  }
+}

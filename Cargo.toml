@@ -1,0 +1,53 @@
+# Taplo 0.9 cannot resolve SchemaStore's split Cargo lint schemas.
+#:schema https://raw.githubusercontent.com/SchemaStore/schemastore/cf458e6e33141d3a0506f24279de79eeeeb5130a/src/schemas/json/cargo.json
+
+[package]
+name = "winupdate"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Read Windows update packages (WIM, ESD, CAB, PSF indexes) on each platform, with range reads"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/napbat/winupdate"
+readme = "README.md"
+keywords = ["wim", "esd", "cab", "psf", "windows-update"]
+categories = ["compression", "parsing"]
+exclude = ["scripts/"]
+
+[dependencies]
+cab = "0.6"
+crc32fast = "1"
+lzms = { path = "../lzms" }
+quick-xml = "0.42"
+sha1 = "0.10"
+sha2 = "0.10"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints.rust]
+warnings = { level = "deny", priority = -2 }
+unused = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+missing_docs = "deny"
+# Denied everywhere. The crate contains no unsafe code.
+unsafe_code = "deny"
+
+[lints.clippy]
+allow_attributes = { level = "deny", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+# Modules live in `foo.rs` with their children in `foo/`, never in
+# `foo/mod.rs` (the Rust Reference's recommended layout); integration test
+# crates with several files use `tests/<name>/main.rs`.
+mod_module_files = "deny"
+
+[lints.rustdoc]
+all = { level = "warn", priority = -1 }

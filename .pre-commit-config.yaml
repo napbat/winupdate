@@ -1,0 +1,29 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+        exclude: '^tests/fixtures/.*\.lzms$'
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+        exclude: '^tests/fixtures/.*\.lzms$'
+      - id: check-toml
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: rustfmt
+        entry: cargo fmt --all -- --check
+        language: system
+        files: '^(src|tests)/.*\.rs$'
+        pass_filenames: false
+      - id: clippy
+        name: clippy (all targets)
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        files: '^(Cargo\.toml|clippy\.toml|rust-toolchain\.toml|src/.*\.rs|tests/.*\.rs)$'
+        pass_filenames: false

@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: winupdate
+    steps:
+      # The crate depends on `../lzms`, so check out both repositories side by side.
+      - uses: actions/checkout@v5
+        with:
+          path: winupdate
+      - uses: actions/checkout@v5
+        with:
+          repository: napbat/lzms
+          path: lzms
+
+      - name: Install mise
+        uses: jdx/mise-action@v4
+        with:
+          experimental: true
+          working_directory: winupdate
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Test
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Documentation
+        run: cargo doc --no-deps --target ${{ matrix.target }}
+
+  msrv:
+    name: MSRV (Rust 1.88)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: winupdate
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: winupdate
+      - uses: actions/checkout@v5
+        with:
+          repository: napbat/lzms
+          path: lzms
+      - name: Install MSRV
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Test
+        run: cargo +1.88.0 test

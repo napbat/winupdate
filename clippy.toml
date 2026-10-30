@@ -1,0 +1,2 @@
+# Public API is linted like private code; breaking fixes ship in a new release.
+avoid-breaking-exported-api = false
